@@ -1,0 +1,96 @@
+name: rusty-wormhole
+summary: wormhole reimplemented in rust
+description: |
+  Workhome reimplemented in Rust
+  Rust implementation might be missing some of the features
+  supported by the Python version, while supporting some new
+  features. See client help.
+
+base: bare
+build-base: core26
+confinement: strict
+grade: stable
+platforms:
+  arm64:
+  amd64:
+  riscv64:
+
+contact: https://github.com/magic-wormhole/magic-wormhole.rs
+issues: https://github.com/magic-wormhole/magic-wormhole.rs/issues
+license: EUPL-1.2
+source-code: https://github.com/magic-wormhole/magic-wormhole.rs
+title: Rusty Wormhole
+website:
+  - https://github.com/magic-wormhole/magic-wormhole.rs
+  - https://github.com/kubiko/magic-wormhole.rs-snap
+
+adopt-info: wormhole-rs
+
+apps:
+  rusty-wormhole:
+    command: usr/bin/wormhole-rs
+    environment:
+      WORMHOLE_MAILBOX_URL: "wss://relay.magic-wormhole.io/v1"
+    plugs:
+      - network
+      - network-bind
+      - home
+
+parts:
+  wormhole-rs:
+    plugin: rust
+    source: https://github.com/magic-wormhole/magic-wormhole.rs.git
+    source-type: git
+    source-tag: main
+    override-pull: |
+      craftctl default
+      track="latest"
+      # depending on a channel in the snap store, build last release tag or master
+      # last stable tag
+      stable_tag=$(git tag --list | sed 's/v//g' | sort --version-sort | grep -v "rc" | tail -1)
+      latest_tag=$(git tag --list | sed 's/v//g' | sort --version-sort | tail -1)
+      if [ "${stable_tag}" != "${latest_tag}" ]; then
+        # last release candidate tag
+        rc_tag=$(git tag --list | sed 's/v//g' | sort --version-sort | grep "rc" | tail -1)
+      fi
+      release_candidate_tag="${rc_tag:-}"
+      stable_version="$(snap info rusty-wormhole 2>/dev/null | awk -v track="${track}" '$1 == track"/stable:" {gsub(/--/,"",$2); print $2 }' || true)"
+      candidate_version="$(snap info rusty-wormhole 2>/dev/null | awk -v track="${track}" '$1 == track"/candidate:" {gsub(/--/,"",$2); print $2 }' || true)"
+      beta_version="$(snap info rusty-wormhole 2>/dev/null | awk -v track="${track}" '$1 == track"/beta:" {gsub(/--/,"",$2); print $2 }' || true)"
+      # If there is no stable, build latest stable_tag
+      # If there is release_candidate_tag, check if this version is also in the candate channel,
+      # If there is different version or channel is closed, build release candidate version
+      if [ -z "${stable_version}" ]; then
+        version="${stable_tag}"
+      elif [ -n "${release_candidate_tag}" ] && [ "${release_candidate_tag}" != "${candidate_version}" ] ; then
+        version="${release_candidate_tag}"
+      # if beta channel is closed or version is less than stable tag version, build last stable version
+      elif [ "^" = "${beta_version}" ] || $(dpkg --compare-versions "${beta_version}" "lt" "${stable_tag}" ); then
+        version="${stable_tag}"
+      fi
+      # if we have no version defined, we are building tip from master
+      if [ -n "${version-}" ]; then
+        git checkout ${version}
+      else
+        version="$(git describe --tags)"
+      fi
+      craftctl set version="${version}"
+    override-build: |
+      if [ "${CRAFT_ARCH_BUILD_FOR}" = "amd64" ]; then
+        arch="x86_64"
+      elif [ "${CRAFT_ARCH_BUILD_FOR}" = "arm64" ]; then
+        arch="aarch64"
+      elif [ "${CRAFT_ARCH_BUILD_FOR}" = "riscv64" ]; then
+        export RUSTFLAGS="-C link-arg=-lm -C target-feature=+crt-static"
+        arch="riscv64gc"
+      fi
+      rustup target add "${arch}-unknown-linux-musl"
+      cargo add openssl --features vendored -p magic-wormhole-cli
+      cargo build --release --target "${arch}-unknown-linux-musl" --features "all"
+      install -D -m 755 target/${arch}-unknown-linux-musl/release/wormhole-rs ${CRAFT_PART_INSTALL}/usr/bin/wormhole-rs
+
+build-packages:
+  - build-essential
+  - gcc
+  - libssl-dev
+  - musl-tools
